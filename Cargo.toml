@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-description = "Preview Codex-compatible animated sprite pets in terminals or a local desktop GUI."
+description = "Codex-compatible animated desktop pet / 兼容 Codex 的桌面动态宠物 / Codex 対応アニメーションデスクトップペット"
 keywords = ["terminal", "sprite", "pet", "gui", "sixel"]
 categories = ["command-line-utilities"]
+repository = "https://github.com/Delta-13/Desktop-Pet"
 
 [dependencies]
 anyhow = "1"
