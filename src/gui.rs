@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -26,6 +28,9 @@ const ACCENT_SOFT: Color32 = Color32::from_rgb(47, 47, 79);
 const SUCCESS: Color32 = Color32::from_rgb(107, 218, 169);
 const MANAGER_SIZE: [f32; 2] = [1060.0, 720.0];
 const DESKTOP_PET_SIZE: [f32; 2] = [360.0, 440.0];
+const REST_AFTER_IDLE: Duration = Duration::from_secs(10);
+const RANDOM_WALK_DELAY: Duration = Duration::from_secs(7);
+const RANDOM_WALK_DURATION: Duration = Duration::from_secs(2);
 
 pub fn run(initial_pet: Option<PathBuf>, start_desktop: bool) -> Result<()> {
     let viewport = egui::ViewportBuilder::default()
@@ -80,11 +85,14 @@ impl Language {
                 subtitle: "A playful desktop companion for Codex-compatible pets",
                 pet_ready: "PET READY",
                 awaiting_pet: "AWAITING PET",
-                desktop_mode: "DESKTOP PET",
                 open_desktop: "Desktop pet mode",
-                desktop_tip: "A draggable, animated companion that lives above your desktop.",
                 controller: "Controller",
-                back_to_controller: "Back to controller",
+                desktop_settings: "03  /  DESKTOP PET",
+                desktop_settings_title: "Desktop companion settings",
+                pet_size: "Pet size",
+                random_walk: "Let the pet wander",
+                random_walk_hint: "When idle, it takes short walks across your desktop.",
+                right_click_hint: "Right-click the desktop pet to return to these settings.",
                 pet_package: "01  /  PET PACKAGE",
                 pick_local: "Pick a local pet",
                 load_help: "Load any folder containing pet.json and its spritesheet.",
@@ -108,22 +116,20 @@ impl Language {
                 feedback_loaded: "Pet ready. Choose an activity, then drag it around the preview.",
                 empty_path: "Enter a folder that contains pet.json first.",
                 copied: "Terminal command copied. It has not been launched.",
-                drag_desktop: "Drag me around your desktop",
-                rest: "Rest",
-                play: "Play",
-                wave: "Wave",
-                walk: "Walk",
                 activity_unavailable: "This pet does not provide that activity.",
             },
             Self::Chinese => UiCopy {
                 subtitle: "为兼容 Codex 的宠物打造的桌面互动伙伴",
                 pet_ready: "宠物已就绪",
                 awaiting_pet: "等待载入宠物",
-                desktop_mode: "桌面宠物",
                 open_desktop: "进入桌宠模式",
-                desktop_tip: "可拖动、会动的桌面伙伴，始终显示在桌面上方。",
                 controller: "控制台",
-                back_to_controller: "返回控制台",
+                desktop_settings: "03  /  桌面宠物",
+                desktop_settings_title: "桌宠设置",
+                pet_size: "宠物大小",
+                random_walk: "让宠物随机走动",
+                random_walk_hint: "空闲时，它会在桌面上进行短距离散步。",
+                right_click_hint: "右键点击桌宠即可返回这些设置。",
                 pet_package: "01  /  宠物包",
                 pick_local: "选择本地宠物",
                 load_help: "载入包含 pet.json 和精灵图的任意文件夹。",
@@ -147,22 +153,20 @@ impl Language {
                 feedback_loaded: "宠物已就绪。选择动作，然后在预览中拖动它。",
                 empty_path: "请先输入包含 pet.json 的文件夹。",
                 copied: "终端命令已复制；程序不会启动终端或进程。",
-                drag_desktop: "拖动我，在桌面上活动",
-                rest: "休息",
-                play: "玩耍",
-                wave: "挥手",
-                walk: "散步",
                 activity_unavailable: "此宠物没有提供该互动动作。",
             },
             Self::Japanese => UiCopy {
                 subtitle: "Codex 互換ペットのための、遊べるデスクトップ相棒",
                 pet_ready: "ペット準備完了",
                 awaiting_pet: "ペットを待機中",
-                desktop_mode: "デスクトップペット",
                 open_desktop: "デスクトップペットにする",
-                desktop_tip: "デスクトップの上で動き、ドラッグできる小さな相棒です。",
                 controller: "コントローラー",
-                back_to_controller: "コントローラーへ戻る",
+                desktop_settings: "03  /  デスクトップペット",
+                desktop_settings_title: "デスクトップ相棒の設定",
+                pet_size: "ペットのサイズ",
+                random_walk: "ペットをランダムに散歩させる",
+                random_walk_hint: "何もしない間、デスクトップを少しだけ散歩します。",
+                right_click_hint: "デスクトップペットを右クリックすると、この設定に戻れます。",
                 pet_package: "01  /  ペットパッケージ",
                 pick_local: "ローカルのペットを選ぶ",
                 load_help: "pet.json とスプライトシートを含むフォルダーを読み込みます。",
@@ -186,11 +190,6 @@ impl Language {
                 feedback_loaded: "ペットの準備ができました。動きを選び、プレビューでドラッグできます。",
                 empty_path: "先に pet.json を含むフォルダーを入力してください。",
                 copied: "ターミナルコマンドをコピーしました。実行はしていません。",
-                drag_desktop: "ドラッグしてデスクトップをお散歩",
-                rest: "休む",
-                play: "遊ぶ",
-                wave: "手を振る",
-                walk: "散歩",
                 activity_unavailable: "このペットにはその動きがありません。",
             },
         }
@@ -201,11 +200,14 @@ struct UiCopy {
     subtitle: &'static str,
     pet_ready: &'static str,
     awaiting_pet: &'static str,
-    desktop_mode: &'static str,
     open_desktop: &'static str,
-    desktop_tip: &'static str,
     controller: &'static str,
-    back_to_controller: &'static str,
+    desktop_settings: &'static str,
+    desktop_settings_title: &'static str,
+    pet_size: &'static str,
+    random_walk: &'static str,
+    random_walk_hint: &'static str,
+    right_click_hint: &'static str,
     pet_package: &'static str,
     pick_local: &'static str,
     load_help: &'static str,
@@ -229,11 +231,6 @@ struct UiCopy {
     feedback_loaded: &'static str,
     empty_path: &'static str,
     copied: &'static str,
-    drag_desktop: &'static str,
-    rest: &'static str,
-    play: &'static str,
-    wave: &'static str,
-    walk: &'static str,
     activity_unavailable: &'static str,
 }
 
@@ -250,6 +247,12 @@ enum Activity {
     Wave,
     Walk,
     Custom,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalkDirection {
+    Left,
+    Right,
 }
 
 struct LoadedPet {
@@ -269,6 +272,12 @@ struct PetApp {
     language: Language,
     mode: DisplayMode,
     activity: Activity,
+    walk_direction: WalkDirection,
+    pet_scale: f32,
+    random_walking: bool,
+    last_interaction: Instant,
+    next_random_walk_at: Instant,
+    random_walk_until: Option<Instant>,
 }
 
 impl PetApp {
@@ -278,12 +287,13 @@ impl PetApp {
         start_desktop: bool,
     ) -> Self {
         configure_theme(&creation_context.egui_ctx);
+        let now = Instant::now();
         let mut app = Self {
             loaded: None,
             path_input: String::new(),
             selected_state: "idle".to_string(),
-            animation_started: Instant::now(),
-            activity_started: Instant::now(),
+            animation_started: now,
+            activity_started: now,
             sprite_offset: egui::Vec2::ZERO,
             texture: None,
             feedback: None,
@@ -294,6 +304,12 @@ impl PetApp {
                 DisplayMode::Controller
             },
             activity: Activity::Rest,
+            walk_direction: WalkDirection::Right,
+            pet_scale: 1.0,
+            random_walking: false,
+            last_interaction: now,
+            next_random_walk_at: now + RANDOM_WALK_DELAY,
+            random_walk_until: None,
         };
         if let Some(path) = initial_pet {
             app.path_input = path.display().to_string();
@@ -340,6 +356,8 @@ impl PetApp {
                 self.animation_started = Instant::now();
                 self.activity_started = Instant::now();
                 self.activity = Activity::Rest;
+                self.walk_direction = WalkDirection::Right;
+                self.record_interaction();
                 self.sprite_offset = egui::Vec2::ZERO;
                 self.texture = None;
                 self.feedback = Some(self.copy().feedback_loaded.to_string());
@@ -387,10 +405,17 @@ impl PetApp {
         self.animation_started = Instant::now();
         self.activity_started = Instant::now();
         self.activity = Activity::Custom;
+        self.record_interaction();
         self.refresh_preview(ctx);
     }
 
     fn start_activity(&mut self, activity: Activity, ctx: &egui::Context) {
+        if self.apply_activity(activity, ctx) {
+            self.record_interaction();
+        }
+    }
+
+    fn apply_activity(&mut self, activity: Activity, ctx: &egui::Context) -> bool {
         let candidates = match activity {
             Activity::Rest => &["idle", "waiting"][..],
             Activity::Play => &["jumping", "waving", "review"][..],
@@ -410,9 +435,66 @@ impl PetApp {
             self.animation_started = Instant::now();
             self.activity_started = Instant::now();
             self.refresh_preview(ctx);
+            true
         } else if self.loaded.is_some() {
             self.feedback = Some(self.copy().activity_unavailable.to_string());
+            false
+        } else {
+            false
         }
+    }
+
+    fn trigger_tap(&mut self, ctx: &egui::Context) {
+        let activity = if random_seed() & 1 == 0 {
+            Activity::Play
+        } else {
+            Activity::Wave
+        };
+        self.start_activity(activity, ctx);
+    }
+
+    fn walk_with_drag(&mut self, drag_delta: egui::Vec2, ctx: &egui::Context) {
+        if drag_delta.x.abs() < 2.0 || drag_delta.x.abs() < drag_delta.y.abs() {
+            self.record_interaction();
+            return;
+        }
+        let direction = if drag_delta.x.is_sign_negative() {
+            WalkDirection::Left
+        } else {
+            WalkDirection::Right
+        };
+        self.start_walk(direction, ctx);
+        self.record_interaction();
+    }
+
+    fn start_walk(&mut self, direction: WalkDirection, ctx: &egui::Context) {
+        let candidates = walk_state_candidates(direction);
+        let next = self.loaded.as_ref().and_then(|loaded| {
+            candidates
+                .iter()
+                .find(|name| loaded.pet.animations.contains_key(**name))
+                .map(|name| (*name).to_string())
+        });
+        if let Some(next) = next {
+            let changed = self.activity != Activity::Walk
+                || self.walk_direction != direction
+                || self.selected_state != next;
+            self.activity = Activity::Walk;
+            self.walk_direction = direction;
+            if changed {
+                self.selected_state = next;
+                self.animation_started = Instant::now();
+                self.activity_started = Instant::now();
+            }
+            self.refresh_preview(ctx);
+        }
+    }
+
+    fn record_interaction(&mut self) {
+        let now = Instant::now();
+        self.last_interaction = now;
+        self.next_random_walk_at = now + RANDOM_WALK_DELAY;
+        self.random_walk_until = None;
     }
 
     fn terminal_command(&self) -> Option<String> {
@@ -435,9 +517,70 @@ impl PetApp {
         let seconds = self.activity_started.elapsed().as_secs_f32();
         match self.activity {
             Activity::Play => egui::vec2(0.0, -(seconds * 7.0).sin().max(0.0) * 18.0),
-            Activity::Walk => egui::vec2((seconds * 2.4).sin() * 28.0, 0.0),
             _ => egui::Vec2::ZERO,
         }
+    }
+
+    fn desktop_image_size(&self) -> egui::Vec2 {
+        egui::vec2(300.0, 325.0) * self.pet_scale
+    }
+
+    fn desktop_window_size(&self) -> egui::Vec2 {
+        (self.desktop_image_size() + egui::vec2(42.0, 44.0)).max(egui::vec2(220.0, 240.0))
+    }
+
+    fn update_desktop_behavior(&mut self, ctx: &egui::Context) {
+        if self.mode != DisplayMode::DesktopPet || self.loaded.is_none() {
+            return;
+        }
+
+        let now = Instant::now();
+        if self.random_walking
+            && self.random_walk_until.is_none()
+            && now >= self.next_random_walk_at
+        {
+            let direction = if random_seed() & 1 == 0 {
+                WalkDirection::Left
+            } else {
+                WalkDirection::Right
+            };
+            self.start_walk(direction, ctx);
+            self.random_walk_until = Some(now + RANDOM_WALK_DURATION);
+            self.next_random_walk_at =
+                now + RANDOM_WALK_DELAY + Duration::from_millis(1_000 + random_seed() % 2_000);
+        }
+
+        if let Some(until) = self.random_walk_until {
+            if now < until {
+                self.move_window_for_random_walk(ctx);
+                ctx.request_repaint_after(Duration::from_millis(16));
+            } else {
+                self.random_walk_until = None;
+                let _ = self.apply_activity(Activity::Rest, ctx);
+            }
+        } else if self.last_interaction.elapsed() >= REST_AFTER_IDLE
+            && self.activity != Activity::Rest
+        {
+            let _ = self.apply_activity(Activity::Rest, ctx);
+        }
+    }
+
+    fn move_window_for_random_walk(&self, ctx: &egui::Context) {
+        let (outer_rect, monitor_size) =
+            ctx.input(|input| (input.viewport().outer_rect, input.viewport().monitor_size));
+        let (Some(outer_rect), Some(monitor_size)) = (outer_rect, monitor_size) else {
+            return;
+        };
+        let step = match self.walk_direction {
+            WalkDirection::Left => -1.5,
+            WalkDirection::Right => 1.5,
+        };
+        let max_x = (monitor_size.x - outer_rect.width()).max(0.0);
+        let x = (outer_rect.left() + step).clamp(0.0, max_x);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            x,
+            outer_rect.top(),
+        )));
     }
 
     fn set_display_mode(&mut self, mode: DisplayMode, ctx: &egui::Context) {
@@ -455,28 +598,30 @@ impl PetApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
                     820.0, 560.0,
                 )));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(egui::Vec2::INFINITY));
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
                     MANAGER_SIZE[0],
                     MANAGER_SIZE[1],
                 )));
             }
             DisplayMode::DesktopPet => {
+                let desktop_size = self.desktop_window_size();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                     egui::WindowLevel::AlwaysOnTop,
                 ));
                 ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
-                    DESKTOP_PET_SIZE[0],
-                    DESKTOP_PET_SIZE[1],
+                    desktop_size.x,
+                    desktop_size.y,
                 )));
                 ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(egui::vec2(
-                    DESKTOP_PET_SIZE[0],
-                    DESKTOP_PET_SIZE[1],
+                    desktop_size.x,
+                    desktop_size.y,
                 )));
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                    DESKTOP_PET_SIZE[0],
-                    DESKTOP_PET_SIZE[1],
+                    desktop_size.x,
+                    desktop_size.y,
                 )));
             }
         }
@@ -485,6 +630,9 @@ impl PetApp {
 
 impl eframe::App for PetApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.mode == DisplayMode::DesktopPet {
+            self.update_desktop_behavior(ctx);
+        }
         self.refresh_preview(ctx);
         match self.mode {
             DisplayMode::Controller => controller_view(self, ctx),
@@ -510,7 +658,7 @@ fn controller_view(app: &mut PetApp, ctx: &egui::Context) {
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("✦").size(24.0).color(ACCENT));
+                ui.label(RichText::new("PET").small().strong().color(ACCENT));
                 ui.vertical(|ui| {
                     ui.label(
                         RichText::new(format!("terminal / sprite pet · {}", copy.controller))
@@ -530,17 +678,6 @@ fn controller_view(app: &mut PetApp, ctx: &egui::Context) {
                         },
                         ready,
                     );
-                    ui.add_space(8.0);
-                    if ui
-                        .add_enabled(
-                            ready,
-                            egui::Button::new(RichText::new(copy.open_desktop).strong())
-                                .fill(ACCENT_SOFT),
-                        )
-                        .clicked()
-                    {
-                        app.set_display_mode(DisplayMode::DesktopPet, ctx);
-                    }
                     language_picker(app, ui);
                 });
             });
@@ -551,7 +688,9 @@ fn controller_view(app: &mut PetApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.columns(2, |columns| {
                 columns[0].set_min_width(374.0);
-                setup_panel(app, &mut columns[0], ctx);
+                egui::ScrollArea::vertical().show(&mut columns[0], |ui| {
+                    setup_panel(app, ui, ctx);
+                });
                 preview_panel(app, &mut columns[1], ctx);
             });
         });
@@ -653,6 +792,49 @@ fn setup_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                         }
                     }
                 });
+            }
+        });
+
+    ui.add_space(14.0);
+    Frame::new()
+        .fill(SURFACE)
+        .stroke(Stroke::new(1.0_f32, SURFACE_RAISED))
+        .corner_radius(12.0)
+        .inner_margin(Margin::same(20))
+        .show(ui, |ui| {
+            section_label(ui, copy.desktop_settings);
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(copy.desktop_settings_title)
+                    .size(22.0)
+                    .strong(),
+            );
+            ui.add_space(8.0);
+            ui.add(
+                egui::Slider::new(&mut app.pet_scale, 0.60..=1.60)
+                    .text(copy.pet_size)
+                    .suffix("x"),
+            );
+            ui.checkbox(&mut app.random_walking, copy.random_walk);
+            ui.label(
+                RichText::new(copy.random_walk_hint)
+                    .small()
+                    .color(TEXT_MUTED),
+            );
+            ui.label(
+                RichText::new(copy.right_click_hint)
+                    .small()
+                    .color(TEXT_MUTED),
+            );
+            ui.add_space(10.0);
+            if ui
+                .add_enabled(
+                    app.loaded.is_some(),
+                    egui::Button::new(RichText::new(copy.open_desktop).strong()).fill(ACCENT_SOFT),
+                )
+                .clicked()
+            {
+                app.set_display_mode(DisplayMode::DesktopPet, ctx);
             }
         });
 
@@ -799,24 +981,29 @@ fn preview_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
 }
 
 fn desktop_pet_view(app: &mut PetApp, ctx: &egui::Context) {
-    let copy = app.copy();
     egui::CentralPanel::default()
         .frame(Frame::NONE)
         .show(ctx, |ui| {
             let rect = ui.max_rect();
-            if let Some(texture) = &app.texture {
-                let image_size = egui::vec2(300.0, 325.0);
+            if let Some(texture_id) = app.texture.as_ref().map(TextureHandle::id) {
                 let image_rect = egui::Rect::from_center_size(
-                    rect.center() + egui::vec2(0.0, -14.0) + app.activity_motion(),
-                    image_size,
+                    rect.center() + app.activity_motion(),
+                    app.desktop_image_size(),
                 );
                 let response = ui.interact(
                     image_rect,
                     ui.id().with("desktop-pet-window-drag-handle"),
-                    egui::Sense::drag(),
+                    egui::Sense::click_and_drag(),
                 );
-                if response.drag_started() {
+                if response.secondary_clicked() {
+                    app.set_display_mode(DisplayMode::Controller, ctx);
+                } else if response.drag_started() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if response.dragged() {
+                    app.walk_with_drag(response.drag_delta(), ctx);
+                } else if response.clicked() {
+                    app.trigger_tap(ctx);
                 }
                 if response.hovered() || response.dragged() {
                     ui.ctx().set_cursor_icon(if response.dragged() {
@@ -826,102 +1013,13 @@ fn desktop_pet_view(app: &mut PetApp, ctx: &egui::Context) {
                     });
                 }
                 ui.painter().image(
-                    texture.id(),
+                    texture_id,
                     image_rect,
                     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
-            } else {
-                let empty = egui::Rect::from_center_size(rect.center(), egui::vec2(280.0, 180.0));
-                ui.painter().rect_filled(
-                    empty,
-                    18.0,
-                    Color32::from_rgba_unmultiplied(SURFACE.r(), SURFACE.g(), SURFACE.b(), 232),
-                );
-                ui.painter().text(
-                    empty.center(),
-                    egui::Align2::CENTER_CENTER,
-                    copy.unlock_states,
-                    egui::FontId::proportional(16.0),
-                    TEXT_MUTED,
-                );
             }
         });
-
-    egui::Area::new(egui::Id::new("desktop-pet-controls"))
-        .fixed_pos(egui::pos2(14.0, 14.0))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(
-                    SURFACE.r(),
-                    SURFACE.g(),
-                    SURFACE.b(),
-                    224,
-                ))
-                .stroke(Stroke::new(1.0_f32, ACCENT_SOFT))
-                .corner_radius(12.0)
-                .inner_margin(Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("✦").color(ACCENT).strong());
-                        ui.label(RichText::new(copy.desktop_mode).small().strong());
-                        language_picker(app, ui);
-                    });
-                });
-        });
-
-    egui::Area::new(egui::Id::new("desktop-pet-action-dock"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -12.0))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(
-                    SURFACE.r(),
-                    SURFACE.g(),
-                    SURFACE.b(),
-                    232,
-                ))
-                .stroke(Stroke::new(1.0_f32, ACCENT_SOFT))
-                .corner_radius(14.0)
-                .inner_margin(Margin::symmetric(9, 8))
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(copy.drag_desktop).small().color(TEXT_MUTED));
-                        ui.label(RichText::new(copy.desktop_tip).small().color(TEXT_MUTED));
-                        ui.horizontal(|ui| {
-                            activity_button(app, ui, ctx, Activity::Rest, copy.rest, "☾");
-                            activity_button(app, ui, ctx, Activity::Play, copy.play, "✦");
-                            activity_button(app, ui, ctx, Activity::Wave, copy.wave, "♡");
-                            activity_button(app, ui, ctx, Activity::Walk, copy.walk, "→");
-                        });
-                        if ui.small_button(copy.back_to_controller).clicked() {
-                            app.set_display_mode(DisplayMode::Controller, ctx);
-                        }
-                    });
-                });
-        });
-}
-
-fn activity_button(
-    app: &mut PetApp,
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    activity: Activity,
-    text: &str,
-    icon: &str,
-) {
-    let active = app.activity == activity;
-    let button = egui::Button::new(format!("{icon} {text}"))
-        .fill(if active { ACCENT_SOFT } else { SURFACE_RAISED })
-        .stroke(Stroke::new(
-            1.0_f32,
-            if active { ACCENT } else { SURFACE_RAISED },
-        ))
-        .corner_radius(8.0);
-    if ui.add_enabled(app.loaded.is_some(), button).clicked() {
-        app.start_activity(activity, ctx);
-    }
 }
 
 fn language_picker(app: &mut PetApp, ui: &mut egui::Ui) {
@@ -939,6 +1037,20 @@ fn language_picker(app: &mut PetApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+fn walk_state_candidates(direction: WalkDirection) -> &'static [&'static str] {
+    match direction {
+        WalkDirection::Left => &["running-left", "running"],
+        WalkDirection::Right => &["running-right", "running"],
+    }
+}
+
+fn random_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or_default()
 }
 
 fn localized_state_name(language: Language, state: &str) -> String {
@@ -1069,6 +1181,18 @@ mod tests {
         assert_eq!(
             Language::Japanese.copy().open_desktop,
             "デスクトップペットにする"
+        );
+    }
+
+    #[test]
+    fn drag_directions_choose_matching_walk_states() {
+        assert_eq!(
+            walk_state_candidates(WalkDirection::Left),
+            ["running-left", "running"]
+        );
+        assert_eq!(
+            walk_state_candidates(WalkDirection::Right),
+            ["running-right", "running"]
         );
     }
 }

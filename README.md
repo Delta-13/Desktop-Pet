@@ -39,7 +39,9 @@ network connection is required.
 - Preview each animation state defined by the pet package.
 - Drag the pet anywhere within the GUI preview canvas.
 - Turn a loaded pet into a borderless desktop companion that you can drag around
-  the desktop; choose **Rest**, **Play**, **Wave**, or **Walk** for interaction.
+  the desktop. Click it to play or wave, drag it to walk in that direction, and
+  right-click it to return to settings.
+- Adjust the pet size and optionally let it take short, random walks while idle.
 - Copy a terminal command without launching a terminal or subprocess.
 - Render Codex v1 (8×9) and v2 (8×11) sprite atlases in compatible terminals.
 
@@ -64,11 +66,12 @@ cargo run -- --desktop .\pets\anpan
 ## Desktop GUI
 
 The local controller provides an English / 简体中文 / 日本語 selector, pet-package
-loading, animation states, and a draggable preview. Choose **Desktop pet mode**
-to make the loaded pet a borderless, transparent, always-on-top companion. Drag
-the sprite itself to reposition its desktop window, then use the compact action
-dock to let it rest, play, wave, or walk. Return to the controller from that
-dock at any time.
+loading, animation states, a draggable preview, a size slider, and a random-walk
+switch. Choose **Desktop pet mode** to make the loaded pet a borderless,
+transparent, always-on-top companion with no visible controls. Click the pet to
+randomly play or wave; drag it to move its window and walk in the drag direction.
+After it is idle for a while it rests. Right-click the pet to return to the
+controller and change its settings.
 
 The **Copy** button only places a terminal command on the clipboard; it never
 launches a terminal or process.
