@@ -2,7 +2,7 @@
 
 # 🐾 Desktop Pet
 
-**A Codex-compatible animated pet for image-capable terminals and a focused desktop preview.**
+**A Codex-compatible animated pet for image-capable terminals and a draggable desktop companion.**
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
@@ -17,9 +17,9 @@
 ## Overview
 
 Desktop Pet loads a local Codex pet package, previews its animations in a
-Codex-inspired desktop controller, and can render the same pet in compatible
-terminals. It is fully local: no account, cloud sync, or network connection is
-required.
+Codex-inspired controller, and can promote it to a transparent, draggable,
+always-on-top desktop pet. It is fully local: no account, cloud sync, or
+network connection is required.
 
 > This is an independent project and is not affiliated with OpenAI.
 
@@ -35,8 +35,11 @@ required.
 ## Features
 
 - Load any local pet folder containing `pet.json` and its spritesheet.
+- Switch the complete interface between English, Simplified Chinese, and Japanese.
 - Preview each animation state defined by the pet package.
 - Drag the pet anywhere within the GUI preview canvas.
+- Turn a loaded pet into a borderless desktop companion that you can drag around
+  the desktop; choose **Rest**, **Play**, **Wave**, or **Walk** for interaction.
 - Copy a terminal command without launching a terminal or subprocess.
 - Render Codex v1 (8×9) and v2 (8×11) sprite atlases in compatible terminals.
 
@@ -52,11 +55,22 @@ cargo run -- --gui
 
 Running `cargo run` with no arguments also opens the GUI.
 
+Launch a pet directly as a desktop companion:
+
+```powershell
+cargo run -- --desktop .\pets\anpan
+```
+
 ## Desktop GUI
 
-The local controller lets you choose a pet package, switch between its
-animation states, and drag the animated sprite in the preview canvas. The
-**Copy** button only places a terminal command on the clipboard; it never
+The local controller provides an English / 简体中文 / 日本語 selector, pet-package
+loading, animation states, and a draggable preview. Choose **Desktop pet mode**
+to make the loaded pet a borderless, transparent, always-on-top companion. Drag
+the sprite itself to reposition its desktop window, then use the compact action
+dock to let it rest, play, wave, or walk. Return to the controller from that
+dock at any time.
+
+The **Copy** button only places a terminal command on the clipboard; it never
 launches a terminal or process.
 
 ## Terminal support

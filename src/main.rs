@@ -52,6 +52,10 @@ struct Cli {
     #[arg(long)]
     gui: bool,
 
+    /// Launch a loaded pet as a transparent, draggable desktop companion.
+    #[arg(long)]
+    desktop: bool,
+
     /// Animation name from the pet manifest or the Codex default animation set.
     #[arg(long, default_value = "idle")]
     state: String,
@@ -348,8 +352,8 @@ impl Renderer {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.gui || cli.pet.is_none() {
-        return gui::run();
+    if cli.gui || cli.desktop || cli.pet.is_none() {
+        return gui::run(cli.pet, cli.desktop);
     }
     run_terminal(cli)
 }
