@@ -7,6 +7,7 @@
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 [![ライセンス：Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-5B73D0?style=flat-square)](LICENSE)
+[![リリース](https://img.shields.io/github/v/release/Delta-13/Desktop-Pet?style=flat-square&color=8B84FF)](https://github.com/Delta-13/Desktop-Pet/releases/latest)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![デスクトップ GUI](https://img.shields.io/badge/interface-デスクトップ%20GUI-8B84FF?style=flat-square)](#デスクトップ-gui)
 
@@ -26,6 +27,7 @@ Desktop Pet はローカルの Codex ペットパッケージを読み込み、C
 ## 目次
 
 - [機能](#機能)
+- [v0.1.0 をダウンロード](#v010-をダウンロード)
 - [クイックスタート](#クイックスタート)
 - [デスクトップ GUI](#デスクトップ-gui)
 - [ターミナル対応](#ターミナル対応)
@@ -42,6 +44,19 @@ Desktop Pet はローカルの Codex ペットパッケージを読み込み、C
 - ペットのサイズを調整でき、待機中のランダムな短い散歩も有効にできます。
 - ターミナルや子プロセスを起動せず、ターミナルコマンドだけをコピーできます。
 - 対応ターミナルで Codex v1（8×9）および v2（8×11）のスプライトアトラスを描画します。
+
+## v0.1.0 をダウンロード
+
+| プラットフォーム | ダウンロード |
+| --- | --- |
+| Windows 10/11 · x86_64 | [Desktop-Pet-v0.1.0-windows-x86_64.zip](https://github.com/Delta-13/Desktop-Pet/releases/download/v0.1.0/Desktop-Pet-v0.1.0-windows-x86_64.zip) |
+| macOS 11+ · Intel | [Desktop-Pet-v0.1.0-macos-x86_64.zip](https://github.com/Delta-13/Desktop-Pet/releases/download/v0.1.0/Desktop-Pet-v0.1.0-macos-x86_64.zip) |
+| macOS 11+ · Apple Silicon | [Desktop-Pet-v0.1.0-macos-aarch64.zip](https://github.com/Delta-13/Desktop-Pet/releases/download/v0.1.0/Desktop-Pet-v0.1.0-macos-aarch64.zip) |
+
+アーカイブを展開し、Windows では `terminal-sprite-pet.exe`、macOS では
+`Desktop Pet.app` を起動してください。初回リリースのバイナリには商用コード署名がないため、
+Windows SmartScreen の警告が表示される場合があります。macOS では初回のみ Control キーを
+押しながらアプリをクリックし、**開く**を選択してください。
 
 ## クイックスタート
 
@@ -68,6 +83,7 @@ cargo run -- --desktop .\pets\anpan
 アニメーション状態の切替、プレビューキャンバス内でのドラッグができます。
 **デスクトップペットにする**を選ぶと、読み込んだペットは枠なし・透明・常に手前の相棒になり、デスクトップにはペット本体だけが表示されます。
 ペットをクリックすると遊ぶ／手を振る動きがランダムに選ばれ、ドラッグするとウィンドウを移動しながらその方向へ歩きます。
+同じドラッグ操作中に左右を反転しても、最新のマウス移動方向へすぐに向き直ります。マウスを止めるかボタンを離すと、走るアニメーションもすぐに停止します。
 しばらく操作しなければ休み、右クリックでコントローラーへ戻れます。コントローラーではサイズと待機中のランダム散歩を設定できます。
 **Copy** ボタンはターミナルコマンドをクリップボードにコピーするだけで、
 ターミナルやプロセスを起動しません。
