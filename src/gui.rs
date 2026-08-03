@@ -31,6 +31,16 @@ const DESKTOP_PET_SIZE: [f32; 2] = [360.0, 440.0];
 const REST_AFTER_IDLE: Duration = Duration::from_secs(10);
 const RANDOM_WALK_DELAY: Duration = Duration::from_secs(7);
 const RANDOM_WALK_DURATION: Duration = Duration::from_secs(2);
+const DRAG_START_DISTANCE_POINTS: f32 = 5.0;
+const DRAG_SPEED_DISTANCE_POINTS: f32 = 4.0;
+const DRAG_SPEED_THRESHOLD_POINTS_PER_SECOND: f32 = 120.0;
+const HORIZONTAL_DEAD_ZONE_POINTS: f32 = 3.0;
+const EFFECTIVE_MOTION_POINTS: f32 = 1.0;
+const CLICK_MAX_DURATION: Duration = Duration::from_millis(250);
+const DIRECTION_SWITCH_DELAY: Duration = Duration::from_millis(30);
+const DRAG_STILL_DELAY: Duration = Duration::from_millis(80);
+const HOVER_CENTER_DEAD_ZONE_POINTS: f32 = 25.0;
+const HOVER_DIRECTION_HYSTERESIS_RADIANS: f32 = 8.0_f32.to_radians();
 
 pub fn run(initial_pet: Option<PathBuf>, start_desktop: bool) -> Result<()> {
     let viewport = egui::ViewportBuilder::default()
@@ -241,18 +251,139 @@ enum DisplayMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Activity {
-    Rest,
-    Play,
-    Wave,
-    Walk,
-    Custom,
+enum HorizontalDirection {
+    Left,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WalkDirection {
-    Left,
+enum LookDirection {
+    Up,
+    UpRight,
     Right,
+    DownRight,
+    Down,
+    DownLeft,
+    Left,
+    UpLeft,
+}
+
+impl LookDirection {
+    fn animation_name(self) -> &'static str {
+        match self {
+            Self::Up => "look-up",
+            Self::UpRight => "look-up-right",
+            Self::Right => "look-right",
+            Self::DownRight => "look-down-right",
+            Self::Down => "look-down",
+            Self::DownLeft => "look-down-left",
+            Self::Left => "look-left",
+            Self::UpLeft => "look-up-left",
+        }
+    }
+
+    fn center_angle(self) -> f32 {
+        match self {
+            Self::Right => 0.0,
+            Self::DownRight => std::f32::consts::FRAC_PI_4,
+            Self::Down => std::f32::consts::FRAC_PI_2,
+            Self::DownLeft => 3.0 * std::f32::consts::FRAC_PI_4,
+            Self::Left => std::f32::consts::PI,
+            Self::UpLeft => -3.0 * std::f32::consts::FRAC_PI_4,
+            Self::Up => -std::f32::consts::FRAC_PI_2,
+            Self::UpRight => -std::f32::consts::FRAC_PI_4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClickReaction {
+    Play,
+    Wave,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PetState {
+    #[default]
+    Idle,
+    Rest,
+    Look(LookDirection),
+    ClickReaction(ClickReaction),
+    Dragging(HorizontalDirection),
+    AutoWalking(HorizontalDirection),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerCompletion {
+    Click,
+    DragEnd,
+    Cancel,
+}
+
+#[derive(Clone, Debug)]
+struct PointerSession {
+    /// All pointer-session positions are physical screen pixels. Conversion from egui points
+    /// happens once, when raw input enters the interaction state machine.
+    press_position_screen: egui::Pos2,
+    previous_position_screen: egui::Pos2,
+    current_position_screen: egui::Pos2,
+    press_time: Duration,
+    accumulated_distance: f32,
+    drag_started: bool,
+    filtered_velocity_x: f32,
+    last_horizontal_direction: HorizontalDirection,
+    press_window_position_screen: egui::Pos2,
+    grab_offset_screen: egui::Vec2,
+    last_sample_time: Duration,
+    last_effective_motion_time: Duration,
+    pending_direction: Option<HorizontalDirection>,
+    pending_direction_since: Duration,
+    pending_direction_samples: u8,
+}
+
+impl PointerSession {
+    fn new(
+        pointer_screen: egui::Pos2,
+        window_screen: egui::Pos2,
+        press_time: Duration,
+        last_horizontal_direction: HorizontalDirection,
+    ) -> Self {
+        Self {
+            press_position_screen: pointer_screen,
+            previous_position_screen: pointer_screen,
+            current_position_screen: pointer_screen,
+            press_time,
+            accumulated_distance: 0.0,
+            drag_started: false,
+            filtered_velocity_x: 0.0,
+            last_horizontal_direction,
+            press_window_position_screen: window_screen,
+            grab_offset_screen: pointer_screen - window_screen,
+            last_sample_time: press_time,
+            last_effective_motion_time: press_time,
+            pending_direction: None,
+            pending_direction_since: press_time,
+            pending_direction_samples: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PointerMotion {
+    target_window_position_screen: egui::Pos2,
+    direction: HorizontalDirection,
+    direction_changed: bool,
+    drag_started: bool,
+    effective_motion: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DesktopGeometry {
+    pixels_per_point: f32,
+    inner_position_screen: egui::Pos2,
+    outer_rect_screen: egui::Rect,
+    hit_rect_screen: egui::Rect,
+    monitor_bounds_screen: Option<egui::Rect>,
 }
 
 struct LoadedPet {
@@ -271,14 +402,21 @@ struct PetApp {
     feedback: Option<String>,
     language: Language,
     mode: DisplayMode,
-    activity: Activity,
-    walk_direction: WalkDirection,
+    pet_state: PetState,
+    facing_direction: HorizontalDirection,
     pet_scale: f32,
     random_walking: bool,
     last_interaction: Instant,
     next_random_walk_at: Instant,
     random_walk_until: Option<Instant>,
-    last_drag_delta: egui::Vec2,
+    reaction_until: Option<Instant>,
+    pointer_session: Option<PointerSession>,
+    pointer_over_pet: bool,
+    last_hover_position_screen: Option<egui::Pos2>,
+    hover_direction: Option<LookDirection>,
+    last_reaction: Option<ClickReaction>,
+    repeated_reaction_count: u8,
+    clock_started: Instant,
 }
 
 impl PetApp {
@@ -304,14 +442,21 @@ impl PetApp {
             } else {
                 DisplayMode::Controller
             },
-            activity: Activity::Rest,
-            walk_direction: WalkDirection::Right,
+            pet_state: PetState::Idle,
+            facing_direction: HorizontalDirection::Right,
             pet_scale: 1.0,
             random_walking: false,
             last_interaction: now,
             next_random_walk_at: now + RANDOM_WALK_DELAY,
             random_walk_until: None,
-            last_drag_delta: egui::Vec2::ZERO,
+            reaction_until: None,
+            pointer_session: None,
+            pointer_over_pet: false,
+            last_hover_position_screen: None,
+            hover_direction: None,
+            last_reaction: None,
+            repeated_reaction_count: 0,
+            clock_started: now,
         };
         if let Some(path) = initial_pet {
             app.path_input = path.display().to_string();
@@ -357,8 +502,10 @@ impl PetApp {
                 self.loaded = Some(LoadedPet { pet, path });
                 self.animation_started = Instant::now();
                 self.activity_started = Instant::now();
-                self.activity = Activity::Rest;
-                self.walk_direction = WalkDirection::Right;
+                self.pet_state = PetState::Idle;
+                self.facing_direction = HorizontalDirection::Right;
+                self.pointer_session = None;
+                self.reaction_until = None;
                 self.record_interaction();
                 self.sprite_offset = egui::Vec2::ZERO;
                 self.texture = None;
@@ -394,7 +541,10 @@ impl PetApp {
         } else {
             self.texture = Some(ctx.load_texture("pet-preview", image, TextureOptions::NEAREST));
         }
-        let repaint = if matches!(self.activity, Activity::Play | Activity::Walk) {
+        let repaint = if matches!(
+            self.pet_state,
+            PetState::ClickReaction(_) | PetState::Dragging(_) | PetState::AutoWalking(_)
+        ) {
             Duration::from_millis(16)
         } else {
             next_delay.unwrap_or(Duration::from_millis(250))
@@ -406,24 +556,47 @@ impl PetApp {
         self.selected_state = state;
         self.animation_started = Instant::now();
         self.activity_started = Instant::now();
-        self.activity = Activity::Custom;
+        self.pet_state = PetState::Idle;
+        self.reaction_until = None;
         self.record_interaction();
         self.refresh_preview(ctx);
     }
 
-    fn start_activity(&mut self, activity: Activity, ctx: &egui::Context) {
-        if self.apply_activity(activity, ctx) {
+    fn trigger_tap(&mut self, ctx: &egui::Context) {
+        let (reaction, repeated_reaction_count) = choose_click_reaction(
+            random_seed(),
+            self.last_reaction,
+            self.repeated_reaction_count,
+        );
+        if self.set_pet_state(PetState::ClickReaction(reaction), ctx) {
+            self.last_reaction = Some(reaction);
+            self.repeated_reaction_count = repeated_reaction_count;
+            let duration = self.current_reaction_duration();
+            self.reaction_until = Some(Instant::now() + duration);
             self.record_interaction();
         }
     }
 
-    fn apply_activity(&mut self, activity: Activity, ctx: &egui::Context) -> bool {
-        let candidates = match activity {
-            Activity::Rest => &["idle", "waiting"][..],
-            Activity::Play => &["jumping", "waving", "review"][..],
-            Activity::Wave => &["waving", "review"][..],
-            Activity::Walk => &["running", "running-right", "running-left"][..],
-            Activity::Custom => &[][..],
+    fn set_pet_state(&mut self, requested: PetState, ctx: &egui::Context) -> bool {
+        let (actual, candidates): (PetState, &[&str]) = match requested {
+            PetState::Idle => (PetState::Idle, &["idle"]),
+            PetState::Rest => (PetState::Rest, &["waiting", "idle"]),
+            PetState::Look(direction) => {
+                if self.has_animation(direction.animation_name()) {
+                    (PetState::Look(direction), look_state_candidates(direction))
+                } else {
+                    (PetState::Idle, &["idle"])
+                }
+            }
+            PetState::ClickReaction(ClickReaction::Play) => {
+                (requested, &["jumping", "review", "waving"])
+            }
+            PetState::ClickReaction(ClickReaction::Wave) => {
+                (requested, &["waving", "review", "jumping"])
+            }
+            PetState::Dragging(direction) | PetState::AutoWalking(direction) => {
+                (requested, walk_state_candidates(direction))
+            }
         };
         let next = self.loaded.as_ref().and_then(|loaded| {
             candidates
@@ -431,66 +604,55 @@ impl PetApp {
                 .find(|name| loaded.pet.animations.contains_key(**name))
                 .map(|name| (*name).to_string())
         });
-        if let Some(next) = next {
+        let Some(next) = next else {
+            if self.loaded.is_some() {
+                self.feedback = Some(self.copy().activity_unavailable.to_string());
+            }
+            return false;
+        };
+
+        let changed = self.pet_state != actual || self.selected_state != next;
+        self.pet_state = actual;
+        if let PetState::Dragging(direction) | PetState::AutoWalking(direction) = actual {
+            self.facing_direction = direction;
+        }
+        if !matches!(actual, PetState::ClickReaction(_)) {
+            self.reaction_until = None;
+        }
+        if changed {
             self.selected_state = next;
-            self.activity = activity;
             self.animation_started = Instant::now();
             self.activity_started = Instant::now();
             self.refresh_preview(ctx);
-            true
-        } else if self.loaded.is_some() {
-            self.feedback = Some(self.copy().activity_unavailable.to_string());
-            false
-        } else {
-            false
         }
+        true
     }
 
-    fn trigger_tap(&mut self, ctx: &egui::Context) {
-        let activity = if random_seed() & 1 == 0 {
-            Activity::Play
+    fn has_animation(&self, name: &str) -> bool {
+        self.loaded
+            .as_ref()
+            .is_some_and(|loaded| loaded.pet.animations.contains_key(name))
+    }
+
+    fn current_reaction_duration(&self) -> Duration {
+        let Some(animation) = self
+            .loaded
+            .as_ref()
+            .and_then(|loaded| loaded.pet.animations.get(&self.selected_state))
+        else {
+            return Duration::from_millis(900);
+        };
+        let end = animation.loop_start.unwrap_or(animation.frames.len());
+        let duration: Duration = animation.frames[..end]
+            .iter()
+            .map(|frame| frame.duration)
+            .sum();
+        if duration.is_zero() {
+            animation
+                .total_duration()
+                .clamp(Duration::from_millis(450), Duration::from_secs(3))
         } else {
-            Activity::Wave
-        };
-        self.start_activity(activity, ctx);
-    }
-
-    fn begin_drag(&mut self) {
-        self.last_drag_delta = egui::Vec2::ZERO;
-        self.record_interaction();
-    }
-
-    fn walk_with_drag(&mut self, total_drag_delta: egui::Vec2, ctx: &egui::Context) {
-        let step_delta = total_drag_delta - self.last_drag_delta;
-        self.last_drag_delta = total_drag_delta;
-        let Some(direction) = walk_direction_from_delta(step_delta) else {
-            self.record_interaction();
-            return;
-        };
-        self.start_walk(direction, ctx);
-        self.record_interaction();
-    }
-
-    fn start_walk(&mut self, direction: WalkDirection, ctx: &egui::Context) {
-        let candidates = walk_state_candidates(direction);
-        let next = self.loaded.as_ref().and_then(|loaded| {
-            candidates
-                .iter()
-                .find(|name| loaded.pet.animations.contains_key(**name))
-                .map(|name| (*name).to_string())
-        });
-        if let Some(next) = next {
-            let changed = self.activity != Activity::Walk
-                || self.walk_direction != direction
-                || self.selected_state != next;
-            self.activity = Activity::Walk;
-            self.walk_direction = direction;
-            if changed {
-                self.selected_state = next;
-                self.animation_started = Instant::now();
-                self.activity_started = Instant::now();
-            }
-            self.refresh_preview(ctx);
+            duration.clamp(Duration::from_millis(450), Duration::from_secs(3))
         }
     }
 
@@ -519,14 +681,16 @@ impl PetApp {
 
     fn activity_motion(&self) -> egui::Vec2 {
         let seconds = self.activity_started.elapsed().as_secs_f32();
-        match self.activity {
-            Activity::Play => egui::vec2(0.0, -(seconds * 7.0).sin().max(0.0) * 18.0),
+        match self.pet_state {
+            PetState::ClickReaction(ClickReaction::Play) => {
+                egui::vec2(0.0, -(seconds * 7.0).sin().max(0.0) * 18.0)
+            }
             _ => egui::Vec2::ZERO,
         }
     }
 
     fn desktop_image_size(&self) -> egui::Vec2 {
-        egui::vec2(300.0, 325.0) * self.pet_scale
+        scaled_pet_size(egui::vec2(300.0, 325.0), self.pet_scale)
     }
 
     fn desktop_window_size(&self) -> egui::Vec2 {
@@ -539,19 +703,58 @@ impl PetApp {
         }
 
         let now = Instant::now();
-        if self.random_walking
-            && self.random_walk_until.is_none()
+        if let Some((drag_started, last_motion, direction)) =
+            self.pointer_session.as_ref().map(|session| {
+                (
+                    session.drag_started,
+                    session.last_effective_motion_time,
+                    session.last_horizontal_direction,
+                )
+            })
+        {
+            if drag_started {
+                let running = drag_animation_is_active(self.clock_elapsed(), last_motion);
+                if !running && matches!(self.pet_state, PetState::Dragging(_)) {
+                    self.set_standing_facing(direction, ctx);
+                } else if running {
+                    ctx.request_repaint_after(Duration::from_millis(16));
+                }
+            }
+            return;
+        }
+
+        if let Some(until) = self.reaction_until {
+            if now < until {
+                ctx.request_repaint_after(Duration::from_millis(16));
+                return;
+            }
+            self.reaction_until = None;
+            let _ = self.set_pet_state(PetState::Idle, ctx);
+        }
+
+        if self.pointer_over_pet {
+            return;
+        }
+
+        if auto_walk_allowed(
+            self.random_walking,
+            self.pointer_session.is_some(),
+            self.pointer_over_pet,
+            self.pet_state,
+        ) && self.random_walk_until.is_none()
             && now >= self.next_random_walk_at
+            && self.pet_state == PetState::Idle
         {
             let direction = if random_seed() & 1 == 0 {
-                WalkDirection::Left
+                HorizontalDirection::Left
             } else {
-                WalkDirection::Right
+                HorizontalDirection::Right
             };
-            self.start_walk(direction, ctx);
-            self.random_walk_until = Some(now + RANDOM_WALK_DURATION);
-            self.next_random_walk_at =
-                now + RANDOM_WALK_DELAY + Duration::from_millis(1_000 + random_seed() % 2_000);
+            if self.set_pet_state(PetState::AutoWalking(direction), ctx) {
+                self.random_walk_until = Some(now + RANDOM_WALK_DURATION);
+                self.next_random_walk_at =
+                    now + RANDOM_WALK_DELAY + Duration::from_millis(1_000 + random_seed() % 2_000);
+            }
         }
 
         if let Some(until) = self.random_walk_until {
@@ -560,37 +763,301 @@ impl PetApp {
                 ctx.request_repaint_after(Duration::from_millis(16));
             } else {
                 self.random_walk_until = None;
-                let _ = self.apply_activity(Activity::Rest, ctx);
+                let _ = self.set_pet_state(PetState::Idle, ctx);
             }
         } else if self.last_interaction.elapsed() >= REST_AFTER_IDLE
-            && self.activity != Activity::Rest
+            && self.pet_state == PetState::Idle
         {
-            let _ = self.apply_activity(Activity::Rest, ctx);
+            let _ = self.set_pet_state(PetState::Rest, ctx);
         }
     }
 
-    fn move_window_for_random_walk(&self, ctx: &egui::Context) {
-        let (outer_rect, monitor_size) =
-            ctx.input(|input| (input.viewport().outer_rect, input.viewport().monitor_size));
-        let (Some(outer_rect), Some(monitor_size)) = (outer_rect, monitor_size) else {
+    fn move_window_for_random_walk(&mut self, ctx: &egui::Context) {
+        let Some(geometry) = desktop_geometry(ctx, egui::Rect::NOTHING) else {
             return;
         };
-        let step = match self.walk_direction {
-            WalkDirection::Left => -1.5,
-            WalkDirection::Right => 1.5,
+        let Some(bounds) = geometry.monitor_bounds_screen else {
+            return;
         };
-        let max_x = (monitor_size.x - outer_rect.width()).max(0.0);
-        let x = (outer_rect.left() + step).clamp(0.0, max_x);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-            x,
-            outer_rect.top(),
-        )));
+        let direction = match self.pet_state {
+            PetState::AutoWalking(direction) => direction,
+            _ => return,
+        };
+        let step = match direction {
+            HorizontalDirection::Left => -1.5 * geometry.pixels_per_point,
+            HorizontalDirection::Right => 1.5 * geometry.pixels_per_point,
+        };
+        let desired = geometry.outer_rect_screen.min + egui::vec2(step, 0.0);
+        let clamped =
+            clamp_window_position_screen(desired, geometry.outer_rect_screen.size(), bounds);
+        if (clamped.x - desired.x).abs() > f32::EPSILON {
+            let reversed = match direction {
+                HorizontalDirection::Left => HorizontalDirection::Right,
+                HorizontalDirection::Right => HorizontalDirection::Left,
+            };
+            let _ = self.set_pet_state(PetState::AutoWalking(reversed), ctx);
+        }
+        send_outer_position_screen(ctx, clamped, geometry.pixels_per_point);
+    }
+
+    fn set_standing_facing(&mut self, direction: HorizontalDirection, ctx: &egui::Context) {
+        let look = match direction {
+            HorizontalDirection::Left => LookDirection::Left,
+            HorizontalDirection::Right => LookDirection::Right,
+        };
+        let requested = if self.has_animation(look.animation_name()) {
+            PetState::Look(look)
+        } else {
+            PetState::Idle
+        };
+        let _ = self.set_pet_state(requested, ctx);
+    }
+
+    fn clock_elapsed(&self) -> Duration {
+        self.clock_started.elapsed()
+    }
+
+    fn process_desktop_pointer(&mut self, ctx: &egui::Context, image_rect: egui::Rect) {
+        let Some(geometry) = desktop_geometry(ctx, image_rect) else {
+            return;
+        };
+        let (events, primary_down, focused, hover_position) = ctx.input(|input| {
+            (
+                input.raw.events.clone(),
+                input.pointer.primary_down(),
+                input.viewport().focused,
+                input.pointer.hover_pos(),
+            )
+        });
+        let now = self.clock_elapsed();
+
+        let right_pressed = events.iter().find_map(|event| match event {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                ..
+            } => Some(screen_position(*pos, geometry)),
+            _ => None,
+        });
+        let right_hits_pet =
+            right_pressed.is_some_and(|position| geometry.hit_rect_screen.contains(position));
+        if should_open_settings(
+            right_pressed.is_some(),
+            self.pointer_session.is_some(),
+            right_hits_pet,
+        ) {
+            self.cancel_pointer_interaction(ctx, true);
+            self.set_display_mode(DisplayMode::Controller, ctx);
+            return;
+        }
+
+        let cancelled = events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::PointerGone | egui::Event::WindowFocused(false)
+            )
+        }) || (focused == Some(false) && self.pointer_session.is_some());
+        if cancelled {
+            self.cancel_pointer_interaction(ctx, true);
+            self.pointer_over_pet = false;
+            return;
+        } else {
+            let mut completed_primary = false;
+            for event in events {
+                match event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        ..
+                    } => {
+                        let pointer_screen = screen_position(pos, geometry);
+                        if geometry.hit_rect_screen.contains(pointer_screen) {
+                            self.begin_pointer_session(pointer_screen, geometry, now, ctx);
+                        }
+                    }
+                    egui::Event::PointerMoved(pos) => {
+                        let pointer_screen = screen_position(pos, geometry);
+                        self.move_pointer_session(pointer_screen, now, geometry, ctx);
+                    }
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        ..
+                    } => {
+                        let pointer_screen = screen_position(pos, geometry);
+                        completed_primary |= self.pointer_session.is_some();
+                        self.complete_pointer_session(pointer_screen, now, geometry, ctx);
+                    }
+                    _ => {}
+                }
+            }
+            if completed_primary {
+                self.pointer_over_pet = false;
+                return;
+            }
+        }
+
+        if self.pointer_session.is_some() && !primary_down {
+            self.cancel_pointer_interaction(ctx, true);
+        }
+        self.update_hover_state(hover_position, geometry, ctx);
+    }
+
+    fn begin_pointer_session(
+        &mut self,
+        pointer_screen: egui::Pos2,
+        geometry: DesktopGeometry,
+        now: Duration,
+        ctx: &egui::Context,
+    ) {
+        self.cancel_pointer_interaction(ctx, false);
+        self.pointer_session = Some(PointerSession::new(
+            pointer_screen,
+            geometry.outer_rect_screen.min,
+            now,
+            self.facing_direction,
+        ));
+        self.pointer_over_pet = true;
+        self.hover_direction = None;
+        self.record_interaction();
+        let _ = self.set_pet_state(PetState::Idle, ctx);
+    }
+
+    fn move_pointer_session(
+        &mut self,
+        pointer_screen: egui::Pos2,
+        now: Duration,
+        geometry: DesktopGeometry,
+        ctx: &egui::Context,
+    ) {
+        let Some(session) = self.pointer_session.take() else {
+            return;
+        };
+        let (session, motion) =
+            advance_pointer_session(session, pointer_screen, now, geometry.pixels_per_point);
+        if motion.effective_motion {
+            self.record_interaction();
+        }
+        if motion.drag_started {
+            send_outer_position_screen(
+                ctx,
+                motion.target_window_position_screen,
+                geometry.pixels_per_point,
+            );
+            if motion.effective_motion
+                && (motion.direction_changed || !matches!(self.pet_state, PetState::Dragging(_)))
+            {
+                let _ = self.set_pet_state(PetState::Dragging(motion.direction), ctx);
+            }
+        }
+        self.pointer_session = Some(session);
+    }
+
+    fn complete_pointer_session(
+        &mut self,
+        pointer_screen: egui::Pos2,
+        now: Duration,
+        geometry: DesktopGeometry,
+        ctx: &egui::Context,
+    ) {
+        let Some(session) = self.pointer_session.take() else {
+            return;
+        };
+        let (session, motion) =
+            advance_pointer_session(session, pointer_screen, now, geometry.pixels_per_point);
+        if motion.drag_started {
+            send_outer_position_screen(
+                ctx,
+                motion.target_window_position_screen,
+                geometry.pixels_per_point,
+            );
+        }
+        let completion = classify_pointer_completion(&session, now, geometry.pixels_per_point);
+        self.clear_pointer_tracking();
+        self.record_interaction();
+        match completion {
+            PointerCompletion::Click => self.trigger_tap(ctx),
+            PointerCompletion::DragEnd | PointerCompletion::Cancel => {
+                let _ = self.set_pet_state(PetState::Idle, ctx);
+            }
+        }
+    }
+
+    fn cancel_pointer_interaction(&mut self, ctx: &egui::Context, record: bool) {
+        let had_session = self.pointer_session.take().is_some();
+        self.clear_pointer_tracking();
+        if had_session {
+            let _ = self.set_pet_state(PetState::Idle, ctx);
+            if record {
+                self.record_interaction();
+            }
+        }
+    }
+
+    fn clear_pointer_tracking(&mut self) {
+        self.pointer_session = None;
+        self.hover_direction = None;
+        self.last_hover_position_screen = None;
+    }
+
+    fn update_hover_state(
+        &mut self,
+        hover_position: Option<egui::Pos2>,
+        geometry: DesktopGeometry,
+        ctx: &egui::Context,
+    ) {
+        if self.pointer_session.is_some() {
+            self.pointer_over_pet = true;
+            return;
+        }
+        let hover_screen = hover_position.map(|position| screen_position(position, geometry));
+        let over_pet =
+            hover_screen.is_some_and(|position| geometry.hit_rect_screen.contains(position));
+        self.pointer_over_pet = over_pet;
+        if !over_pet {
+            self.last_hover_position_screen = None;
+            self.hover_direction = None;
+            if matches!(self.pet_state, PetState::Look(_)) {
+                let _ = self.set_pet_state(PetState::Idle, ctx);
+            }
+            return;
+        }
+        let Some(hover_screen) = hover_screen else {
+            return;
+        };
+        let significant_motion = self.last_hover_position_screen.is_none_or(|previous| {
+            previous.distance(hover_screen) >= EFFECTIVE_MOTION_POINTS * geometry.pixels_per_point
+        });
+        self.last_hover_position_screen = Some(hover_screen);
+        if significant_motion {
+            self.record_interaction();
+        }
+        if matches!(self.pet_state, PetState::ClickReaction(_)) {
+            return;
+        }
+        let direction = quantize_look_direction(
+            hover_screen - geometry.hit_rect_screen.center(),
+            HOVER_CENTER_DEAD_ZONE_POINTS * geometry.pixels_per_point,
+            self.hover_direction,
+        );
+        self.hover_direction = direction;
+        let requested = direction.map_or(PetState::Idle, PetState::Look);
+        let _ = self.set_pet_state(requested, ctx);
     }
 
     fn set_display_mode(&mut self, mode: DisplayMode, ctx: &egui::Context) {
         if self.mode == mode {
             return;
         }
+        self.cancel_pointer_interaction(ctx, false);
+        self.pointer_over_pet = false;
+        self.random_walk_until = None;
+        self.reaction_until = None;
+        let _ = self.set_pet_state(PetState::Idle, ctx);
+        self.record_interaction();
         self.mode = mode;
         match mode {
             DisplayMode::Controller => {
@@ -635,13 +1102,27 @@ impl PetApp {
 impl eframe::App for PetApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.mode == DisplayMode::DesktopPet {
-            self.update_desktop_behavior(ctx);
+            let image_rect = egui::Rect::from_center_size(
+                ctx.screen_rect().center() + self.activity_motion(),
+                self.desktop_image_size(),
+            );
+            self.process_desktop_pointer(ctx, image_rect);
+            if self.mode == DisplayMode::DesktopPet {
+                self.update_desktop_behavior(ctx);
+            }
         }
         self.refresh_preview(ctx);
         match self.mode {
             DisplayMode::Controller => controller_view(self, ctx),
             DisplayMode::DesktopPet => desktop_pet_view(self, ctx),
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.pointer_session = None;
+        self.random_walk_until = None;
+        self.reaction_until = None;
+        self.pet_state = PetState::Idle;
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -997,24 +1478,10 @@ fn desktop_pet_view(app: &mut PetApp, ctx: &egui::Context) {
                 let response = ui.interact(
                     image_rect,
                     ui.id().with("desktop-pet-window-drag-handle"),
-                    egui::Sense::click_and_drag(),
+                    egui::Sense::hover(),
                 );
-                if response.secondary_clicked() {
-                    app.set_display_mode(DisplayMode::Controller, ctx);
-                } else if response.drag_started() {
-                    app.begin_drag();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
-                if response.dragged() {
-                    app.walk_with_drag(response.drag_delta(), ctx);
-                } else if response.clicked() {
-                    app.trigger_tap(ctx);
-                }
-                if response.drag_stopped() {
-                    app.last_drag_delta = egui::Vec2::ZERO;
-                }
-                if response.hovered() || response.dragged() {
-                    ui.ctx().set_cursor_icon(if response.dragged() {
+                if response.hovered() || app.pointer_session.is_some() {
+                    ui.ctx().set_cursor_icon(if app.pointer_session.is_some() {
                         egui::CursorIcon::Grabbing
                     } else {
                         egui::CursorIcon::Grab
@@ -1047,19 +1514,304 @@ fn language_picker(app: &mut PetApp, ui: &mut egui::Ui) {
     });
 }
 
-fn walk_state_candidates(direction: WalkDirection) -> &'static [&'static str] {
+fn walk_state_candidates(direction: HorizontalDirection) -> &'static [&'static str] {
     match direction {
-        WalkDirection::Left => &["running-left", "running"],
-        WalkDirection::Right => &["running-right", "running"],
+        HorizontalDirection::Left => &["running-left", "running"],
+        HorizontalDirection::Right => &["running-right", "running"],
     }
 }
 
-fn walk_direction_from_delta(delta: egui::Vec2) -> Option<WalkDirection> {
-    (delta.x.abs() >= 2.0 && delta.x.abs() >= delta.y.abs()).then_some(if delta.x < 0.0 {
-        WalkDirection::Left
+fn look_state_candidates(direction: LookDirection) -> &'static [&'static str] {
+    match direction {
+        LookDirection::Up => &["look-up"],
+        LookDirection::UpRight => &["look-up-right"],
+        LookDirection::Right => &["look-right"],
+        LookDirection::DownRight => &["look-down-right"],
+        LookDirection::Down => &["look-down"],
+        LookDirection::DownLeft => &["look-down-left"],
+        LookDirection::Left => &["look-left"],
+        LookDirection::UpLeft => &["look-up-left"],
+    }
+}
+
+fn desktop_geometry(ctx: &egui::Context, hit_rect: egui::Rect) -> Option<DesktopGeometry> {
+    let pixels_per_point = ctx.pixels_per_point();
+    let (inner_rect, outer_rect, monitor_size) = ctx.input(|input| {
+        (
+            input.viewport().inner_rect,
+            input.viewport().outer_rect,
+            input.viewport().monitor_size,
+        )
+    });
+    let inner_rect = inner_rect?;
+    let outer_rect = outer_rect?;
+    let inner_position_screen = point_to_screen_pixels(inner_rect.min, pixels_per_point);
+    let outer_rect_screen = rect_to_screen_pixels(outer_rect, pixels_per_point);
+    let hit_rect_screen = if hit_rect == egui::Rect::NOTHING {
+        egui::Rect::NOTHING
     } else {
-        WalkDirection::Right
+        egui::Rect::from_min_max(
+            inner_position_screen + hit_rect.min.to_vec2() * pixels_per_point,
+            inner_position_screen + hit_rect.max.to_vec2() * pixels_per_point,
+        )
+    };
+    let monitor_bounds_screen = monitor_size.and_then(|size| {
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, size * pixels_per_point);
+        // eframe 0.31 exposes the size of current_monitor(), but not its global origin/work area.
+        // Only use the bound when the reported global window coordinates prove it is the primary
+        // monitor. On a negative or offset monitor, skipping the clamp is safer than teleporting.
+        bounds
+            .contains(outer_rect_screen.center())
+            .then_some(bounds)
+    });
+    Some(DesktopGeometry {
+        pixels_per_point,
+        inner_position_screen,
+        outer_rect_screen,
+        hit_rect_screen,
+        monitor_bounds_screen,
     })
+}
+
+fn point_to_screen_pixels(point: egui::Pos2, pixels_per_point: f32) -> egui::Pos2 {
+    egui::pos2(point.x * pixels_per_point, point.y * pixels_per_point)
+}
+
+fn rect_to_screen_pixels(rect: egui::Rect, pixels_per_point: f32) -> egui::Rect {
+    egui::Rect::from_min_max(
+        point_to_screen_pixels(rect.min, pixels_per_point),
+        point_to_screen_pixels(rect.max, pixels_per_point),
+    )
+}
+
+fn screen_position(local_position: egui::Pos2, geometry: DesktopGeometry) -> egui::Pos2 {
+    geometry.inner_position_screen + local_position.to_vec2() * geometry.pixels_per_point
+}
+
+fn send_outer_position_screen(
+    ctx: &egui::Context,
+    position_screen: egui::Pos2,
+    pixels_per_point: f32,
+) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+        position_screen.x / pixels_per_point,
+        position_screen.y / pixels_per_point,
+    )));
+}
+
+fn advance_pointer_session(
+    mut session: PointerSession,
+    current_position_screen: egui::Pos2,
+    now: Duration,
+    pixels_per_point: f32,
+) -> (PointerSession, PointerMotion) {
+    let delta_screen = current_position_screen - session.previous_position_screen;
+    session.current_position_screen = current_position_screen;
+    session.accumulated_distance += delta_screen.length();
+
+    let elapsed = now.saturating_sub(session.last_sample_time);
+    let elapsed_seconds = elapsed.as_secs_f32().max(0.001);
+    let raw_velocity_x = delta_screen.x / elapsed_seconds;
+    session.filtered_velocity_x = if session.last_sample_time == session.press_time {
+        raw_velocity_x
+    } else {
+        0.65 * raw_velocity_x + 0.35 * session.filtered_velocity_x
+    };
+    session.last_sample_time = now;
+
+    let effective_motion = delta_screen.length() >= EFFECTIVE_MOTION_POINTS * pixels_per_point;
+    if effective_motion {
+        session.last_effective_motion_time = now;
+    }
+
+    let press_distance = session
+        .press_position_screen
+        .distance(current_position_screen);
+    let crossed_distance = press_distance >= DRAG_START_DISTANCE_POINTS * pixels_per_point;
+    let crossed_speed = session.accumulated_distance
+        >= DRAG_SPEED_DISTANCE_POINTS * pixels_per_point
+        && session.filtered_velocity_x.abs()
+            >= DRAG_SPEED_THRESHOLD_POINTS_PER_SECOND * pixels_per_point;
+    session.drag_started |= crossed_distance || crossed_speed;
+
+    let old_direction = session.last_horizontal_direction;
+    if session.drag_started {
+        let dead_zone = HORIZONTAL_DEAD_ZONE_POINTS * pixels_per_point;
+        if let Some(candidate) = horizontal_direction_candidate(delta_screen, dead_zone) {
+            if candidate == session.last_horizontal_direction {
+                session.pending_direction = None;
+                session.pending_direction_samples = 0;
+            } else {
+                let strong_reversal = delta_screen.x.abs() >= 2.0 * dead_zone;
+                if session.pending_direction == Some(candidate) {
+                    session.pending_direction_samples =
+                        session.pending_direction_samples.saturating_add(1);
+                } else {
+                    session.pending_direction = Some(candidate);
+                    session.pending_direction_since = now;
+                    session.pending_direction_samples = 1;
+                }
+                if strong_reversal
+                    || session.pending_direction_samples >= 2
+                    || now.saturating_sub(session.pending_direction_since) >= DIRECTION_SWITCH_DELAY
+                {
+                    session.last_horizontal_direction = candidate;
+                    session.pending_direction = None;
+                    session.pending_direction_samples = 0;
+                }
+            }
+        } else {
+            session.pending_direction = None;
+            session.pending_direction_samples = 0;
+        }
+    }
+
+    // The next sample must always be compared with this sample, never the press position.
+    session.previous_position_screen = current_position_screen;
+    let target_window_position_screen = current_position_screen - session.grab_offset_screen;
+    debug_assert!(
+        target_window_position_screen.distance(
+            session.press_window_position_screen
+                + (current_position_screen - session.press_position_screen)
+        ) < 0.01
+    );
+    let motion = PointerMotion {
+        target_window_position_screen,
+        direction: session.last_horizontal_direction,
+        direction_changed: old_direction != session.last_horizontal_direction,
+        drag_started: session.drag_started,
+        effective_motion,
+    };
+    (session, motion)
+}
+
+fn horizontal_direction_candidate(
+    delta_screen: egui::Vec2,
+    dead_zone: f32,
+) -> Option<HorizontalDirection> {
+    (delta_screen.x.abs() > dead_zone && delta_screen.x.abs() >= delta_screen.y.abs()).then_some(
+        if delta_screen.x < 0.0 {
+            HorizontalDirection::Left
+        } else {
+            HorizontalDirection::Right
+        },
+    )
+}
+
+fn classify_pointer_completion(
+    session: &PointerSession,
+    release_time: Duration,
+    pixels_per_point: f32,
+) -> PointerCompletion {
+    if session.drag_started {
+        return PointerCompletion::DragEnd;
+    }
+    let short_press = release_time.saturating_sub(session.press_time) <= CLICK_MAX_DURATION;
+    let small_movement = session
+        .press_position_screen
+        .distance(session.current_position_screen)
+        < DRAG_START_DISTANCE_POINTS * pixels_per_point;
+    if short_press && small_movement {
+        PointerCompletion::Click
+    } else {
+        PointerCompletion::Cancel
+    }
+}
+
+fn clamp_window_position_screen(
+    desired_position: egui::Pos2,
+    window_size: egui::Vec2,
+    work_area: egui::Rect,
+) -> egui::Pos2 {
+    let max_x = (work_area.right() - window_size.x).max(work_area.left());
+    let max_y = (work_area.bottom() - window_size.y).max(work_area.top());
+    egui::pos2(
+        desired_position.x.clamp(work_area.left(), max_x),
+        desired_position.y.clamp(work_area.top(), max_y),
+    )
+}
+
+fn quantize_look_direction(
+    offset_screen: egui::Vec2,
+    center_dead_zone: f32,
+    previous: Option<LookDirection>,
+) -> Option<LookDirection> {
+    if offset_screen.length() <= center_dead_zone {
+        return None;
+    }
+    let angle = offset_screen.y.atan2(offset_screen.x);
+    if previous.is_some_and(|direction| {
+        angular_distance(angle, direction.center_angle())
+            <= std::f32::consts::FRAC_PI_8 + HOVER_DIRECTION_HYSTERESIS_RADIANS
+    }) {
+        return previous;
+    }
+    let sector = (angle / std::f32::consts::FRAC_PI_4).round() as i32;
+    Some(match sector.rem_euclid(8) {
+        0 => LookDirection::Right,
+        1 => LookDirection::DownRight,
+        2 => LookDirection::Down,
+        3 => LookDirection::DownLeft,
+        4 => LookDirection::Left,
+        5 => LookDirection::UpLeft,
+        6 => LookDirection::Up,
+        _ => LookDirection::UpRight,
+    })
+}
+
+fn angular_distance(a: f32, b: f32) -> f32 {
+    let tau = 2.0 * std::f32::consts::PI;
+    ((a - b + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI).abs()
+}
+
+fn choose_click_reaction(
+    seed: u64,
+    previous: Option<ClickReaction>,
+    repeated_count: u8,
+) -> (ClickReaction, u8) {
+    let random_choice = if seed & 1 == 0 {
+        ClickReaction::Play
+    } else {
+        ClickReaction::Wave
+    };
+    let choice = if previous == Some(random_choice) && repeated_count >= 2 {
+        match random_choice {
+            ClickReaction::Play => ClickReaction::Wave,
+            ClickReaction::Wave => ClickReaction::Play,
+        }
+    } else {
+        random_choice
+    };
+    let next_count = if previous == Some(choice) {
+        repeated_count.saturating_add(1)
+    } else {
+        1
+    };
+    (choice, next_count)
+}
+
+fn should_open_settings(
+    right_pressed: bool,
+    pointer_session_active: bool,
+    pointer_hits_pet: bool,
+) -> bool {
+    right_pressed && (pointer_session_active || pointer_hits_pet)
+}
+
+fn auto_walk_allowed(
+    enabled: bool,
+    pointer_session_active: bool,
+    hovered: bool,
+    state: PetState,
+) -> bool {
+    enabled
+        && !pointer_session_active
+        && !hovered
+        && matches!(state, PetState::Idle | PetState::AutoWalking(_))
+}
+
+fn drag_animation_is_active(now: Duration, last_effective_motion: Duration) -> bool {
+    now.saturating_sub(last_effective_motion) < DRAG_STILL_DELAY
 }
 
 fn random_seed() -> u64 {
@@ -1177,9 +1929,36 @@ fn clamp_sprite_offset(
     )
 }
 
+fn scaled_pet_size(base_size: egui::Vec2, scale: f32) -> egui::Vec2 {
+    base_size * scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pointer_session(direction: HorizontalDirection) -> PointerSession {
+        PointerSession::new(
+            egui::pos2(100.0, 100.0),
+            egui::pos2(40.0, 30.0),
+            Duration::ZERO,
+            direction,
+        )
+    }
+
+    fn advance(
+        session: PointerSession,
+        x: f32,
+        y: f32,
+        millis: u64,
+    ) -> (PointerSession, PointerMotion) {
+        advance_pointer_session(
+            session,
+            egui::pos2(x, y),
+            Duration::from_millis(millis),
+            1.0,
+        )
+    }
 
     #[test]
     fn keeps_a_dragged_pet_inside_the_preview_bounds() {
@@ -1203,25 +1982,180 @@ mod tests {
     #[test]
     fn drag_directions_choose_matching_walk_states() {
         assert_eq!(
-            walk_state_candidates(WalkDirection::Left),
+            walk_state_candidates(HorizontalDirection::Left),
             ["running-left", "running"]
         );
         assert_eq!(
-            walk_state_candidates(WalkDirection::Right),
+            walk_state_candidates(HorizontalDirection::Right),
             ["running-right", "running"]
         );
     }
 
     #[test]
-    fn follows_the_latest_drag_step_after_reversing_direction() {
-        assert_eq!(
-            walk_direction_from_delta(egui::vec2(12.0, 1.0)),
-            Some(WalkDirection::Right)
+    fn one_drag_reverses_from_right_to_left_immediately() {
+        let (session, motion) = advance(
+            pointer_session(HorizontalDirection::Right),
+            112.0,
+            100.0,
+            16,
         );
-        assert_eq!(
-            walk_direction_from_delta(egui::vec2(-9.0, 0.0)),
-            Some(WalkDirection::Left)
+        assert_eq!(motion.direction, HorizontalDirection::Right);
+
+        let (_, reversed) = advance(session, 102.0, 100.0, 32);
+        assert_eq!(reversed.direction, HorizontalDirection::Left);
+        assert!(reversed.direction_changed);
+    }
+
+    #[test]
+    fn one_drag_reverses_from_left_to_right_immediately() {
+        let (session, motion) =
+            advance(pointer_session(HorizontalDirection::Left), 88.0, 100.0, 16);
+        assert_eq!(motion.direction, HorizontalDirection::Left);
+
+        let (_, reversed) = advance(session, 98.0, 100.0, 32);
+        assert_eq!(reversed.direction, HorizontalDirection::Right);
+        assert!(reversed.direction_changed);
+    }
+
+    #[test]
+    fn weak_reversal_is_confirmed_on_the_second_sample() {
+        let (session, _) = advance(
+            pointer_session(HorizontalDirection::Right),
+            112.0,
+            100.0,
+            16,
         );
-        assert_eq!(walk_direction_from_delta(egui::vec2(1.0, 7.0)), None);
+        let (session, first) = advance(session, 108.0, 100.0, 32);
+        assert_eq!(first.direction, HorizontalDirection::Right);
+
+        let (_, second) = advance(session, 104.0, 100.0, 48);
+        assert_eq!(second.direction, HorizontalDirection::Left);
+    }
+
+    #[test]
+    fn micro_jitter_does_not_flip_direction() {
+        let (session, _) = advance(
+            pointer_session(HorizontalDirection::Right),
+            112.0,
+            100.0,
+            16,
+        );
+        let (session, first) = advance(session, 110.0, 100.5, 32);
+        let (_, second) = advance(session, 112.0, 99.5, 48);
+
+        assert_eq!(first.direction, HorizontalDirection::Right);
+        assert_eq!(second.direction, HorizontalDirection::Right);
+    }
+
+    #[test]
+    fn mostly_vertical_drag_keeps_the_last_direction() {
+        let (session, _) = advance(pointer_session(HorizontalDirection::Left), 94.0, 100.0, 16);
+        let (_, motion) = advance(session, 96.0, 116.0, 32);
+
+        assert_eq!(motion.direction, HorizontalDirection::Left);
+    }
+
+    #[test]
+    fn small_short_movement_is_a_click() {
+        let (session, _) = advance(
+            pointer_session(HorizontalDirection::Right),
+            103.0,
+            102.0,
+            100,
+        );
+
+        assert_eq!(
+            classify_pointer_completion(&session, Duration::from_millis(120), 1.0,),
+            PointerCompletion::Click
+        );
+    }
+
+    #[test]
+    fn crossing_drag_threshold_never_becomes_a_click() {
+        let (session, motion) = advance(
+            pointer_session(HorizontalDirection::Right),
+            106.0,
+            100.0,
+            100,
+        );
+        assert!(motion.drag_started);
+        assert_eq!(
+            classify_pointer_completion(&session, Duration::from_millis(120), 1.0,),
+            PointerCompletion::DragEnd
+        );
+    }
+
+    #[test]
+    fn right_click_has_priority_over_an_active_drag() {
+        assert!(should_open_settings(true, true, false));
+        assert!(should_open_settings(true, false, true));
+        assert!(!should_open_settings(false, true, true));
+    }
+
+    #[test]
+    fn user_interaction_disables_auto_walk_immediately() {
+        assert!(auto_walk_allowed(true, false, false, PetState::Idle));
+        assert!(!auto_walk_allowed(
+            true,
+            true,
+            false,
+            PetState::AutoWalking(HorizontalDirection::Right)
+        ));
+        assert!(!auto_walk_allowed(true, false, true, PetState::Idle));
+    }
+
+    #[test]
+    fn dpi_and_negative_monitor_bounds_are_calculated_in_screen_pixels() {
+        assert_eq!(
+            point_to_screen_pixels(egui::pos2(-640.0, 120.0), 1.5),
+            egui::pos2(-960.0, 180.0)
+        );
+        let work_area =
+            egui::Rect::from_min_size(egui::pos2(-1920.0, -120.0), egui::vec2(1920.0, 1080.0));
+        assert_eq!(
+            clamp_window_position_screen(
+                egui::pos2(-2_100.0, 900.0),
+                egui::vec2(360.0, 440.0),
+                work_area,
+            ),
+            egui::pos2(-1920.0, 520.0)
+        );
+    }
+
+    #[test]
+    fn scaled_pet_size_updates_the_hit_region_dimensions() {
+        let base = egui::vec2(300.0, 325.0);
+        let small = scaled_pet_size(base, 0.6);
+        let large = scaled_pet_size(base, 1.6);
+        assert!((small.x - 180.0).abs() < 0.001 && (small.y - 195.0).abs() < 0.001);
+        assert!((large.x - 480.0).abs() < 0.001 && (large.y - 520.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn drag_target_preserves_the_original_grab_offset() {
+        let session = pointer_session(HorizontalDirection::Right);
+        let (_, motion) = advance(session, 130.0, 145.0, 16);
+
+        assert_eq!(motion.target_window_position_screen, egui::pos2(70.0, 75.0));
+    }
+
+    #[test]
+    fn click_reaction_never_repeats_more_than_twice() {
+        let (choice, count) = choose_click_reaction(0, Some(ClickReaction::Play), 2);
+        assert_eq!(choice, ClickReaction::Wave);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn drag_animation_stops_after_eighty_milliseconds_without_motion() {
+        let last_motion = Duration::from_millis(20);
+        assert!(drag_animation_is_active(
+            Duration::from_millis(99),
+            last_motion
+        ));
+        assert!(!drag_animation_is_active(
+            Duration::from_millis(100),
+            last_motion
+        ));
     }
 }
