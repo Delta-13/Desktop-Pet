@@ -278,6 +278,7 @@ struct PetApp {
     last_interaction: Instant,
     next_random_walk_at: Instant,
     random_walk_until: Option<Instant>,
+    last_drag_delta: egui::Vec2,
 }
 
 impl PetApp {
@@ -310,6 +311,7 @@ impl PetApp {
             last_interaction: now,
             next_random_walk_at: now + RANDOM_WALK_DELAY,
             random_walk_until: None,
+            last_drag_delta: egui::Vec2::ZERO,
         };
         if let Some(path) = initial_pet {
             app.path_input = path.display().to_string();
@@ -453,15 +455,17 @@ impl PetApp {
         self.start_activity(activity, ctx);
     }
 
-    fn walk_with_drag(&mut self, drag_delta: egui::Vec2, ctx: &egui::Context) {
-        if drag_delta.x.abs() < 2.0 || drag_delta.x.abs() < drag_delta.y.abs() {
+    fn begin_drag(&mut self) {
+        self.last_drag_delta = egui::Vec2::ZERO;
+        self.record_interaction();
+    }
+
+    fn walk_with_drag(&mut self, total_drag_delta: egui::Vec2, ctx: &egui::Context) {
+        let step_delta = total_drag_delta - self.last_drag_delta;
+        self.last_drag_delta = total_drag_delta;
+        let Some(direction) = walk_direction_from_delta(step_delta) else {
             self.record_interaction();
             return;
-        }
-        let direction = if drag_delta.x.is_sign_negative() {
-            WalkDirection::Left
-        } else {
-            WalkDirection::Right
         };
         self.start_walk(direction, ctx);
         self.record_interaction();
@@ -998,12 +1002,16 @@ fn desktop_pet_view(app: &mut PetApp, ctx: &egui::Context) {
                 if response.secondary_clicked() {
                     app.set_display_mode(DisplayMode::Controller, ctx);
                 } else if response.drag_started() {
+                    app.begin_drag();
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 if response.dragged() {
                     app.walk_with_drag(response.drag_delta(), ctx);
                 } else if response.clicked() {
                     app.trigger_tap(ctx);
+                }
+                if response.drag_stopped() {
+                    app.last_drag_delta = egui::Vec2::ZERO;
                 }
                 if response.hovered() || response.dragged() {
                     ui.ctx().set_cursor_icon(if response.dragged() {
@@ -1044,6 +1052,14 @@ fn walk_state_candidates(direction: WalkDirection) -> &'static [&'static str] {
         WalkDirection::Left => &["running-left", "running"],
         WalkDirection::Right => &["running-right", "running"],
     }
+}
+
+fn walk_direction_from_delta(delta: egui::Vec2) -> Option<WalkDirection> {
+    (delta.x.abs() >= 2.0 && delta.x.abs() >= delta.y.abs()).then_some(if delta.x < 0.0 {
+        WalkDirection::Left
+    } else {
+        WalkDirection::Right
+    })
 }
 
 fn random_seed() -> u64 {
@@ -1194,5 +1210,18 @@ mod tests {
             walk_state_candidates(WalkDirection::Right),
             ["running-right", "running"]
         );
+    }
+
+    #[test]
+    fn follows_the_latest_drag_step_after_reversing_direction() {
+        assert_eq!(
+            walk_direction_from_delta(egui::vec2(12.0, 1.0)),
+            Some(WalkDirection::Right)
+        );
+        assert_eq!(
+            walk_direction_from_delta(egui::vec2(-9.0, 0.0)),
+            Some(WalkDirection::Left)
+        );
+        assert_eq!(walk_direction_from_delta(egui::vec2(1.0, 7.0)), None);
     }
 }
