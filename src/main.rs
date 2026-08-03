@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod sixel;
+mod gui;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -45,7 +46,11 @@ const ST: &str = "\x1b\\";
 )]
 struct Cli {
     /// Directory containing pet.json, or the path to pet.json itself.
-    pet: PathBuf,
+    pet: Option<PathBuf>,
+
+    /// Open the desktop pet controller instead of rendering in the terminal.
+    #[arg(long)]
+    gui: bool,
 
     /// Animation name from the pet manifest or the Codex default animation set.
     #[arg(long, default_value = "idle")]
@@ -343,6 +348,13 @@ impl Renderer {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.gui || cli.pet.is_none() {
+        return gui::run();
+    }
+    run_terminal(cli)
+}
+
+fn run_terminal(cli: Cli) -> Result<()> {
     if !io::stdout().is_terminal() {
         bail!("terminal-sprite-pet must write to an interactive terminal");
     }
@@ -352,7 +364,8 @@ fn main() -> Result<()> {
         bail!("--duration must be a positive, finite number of seconds");
     }
 
-    let pet = Pet::load(&cli.pet)?;
+    let pet_path = cli.pet.expect("CLI pet path is checked before rendering");
+    let pet = Pet::load(&pet_path)?;
     let state = pet.animations.get(&cli.state).with_context(|| {
         let names = pet
             .animations
