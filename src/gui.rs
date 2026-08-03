@@ -181,7 +181,11 @@ impl eframe::App for PetApp {
                         let ready = self.loaded.is_some();
                         status_badge(
                             ui,
-                            if ready { "PREVIEW READY" } else { "AWAITING PET" },
+                            if ready {
+                                "PREVIEW READY"
+                            } else {
+                                "AWAITING PET"
+                            },
                             ready,
                         );
                     });
@@ -229,7 +233,7 @@ impl eframe::App for PetApp {
 fn setup_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
     Frame::new()
         .fill(SURFACE)
-        .stroke(Stroke::new(1.0, SURFACE_RAISED))
+        .stroke(Stroke::new(1.0_f32, SURFACE_RAISED))
         .corner_radius(12.0)
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
@@ -265,7 +269,7 @@ fn setup_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
     ui.add_space(14.0);
     Frame::new()
         .fill(SURFACE)
-        .stroke(Stroke::new(1.0, SURFACE_RAISED))
+        .stroke(Stroke::new(1.0_f32, SURFACE_RAISED))
         .corner_radius(12.0)
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
@@ -292,7 +296,7 @@ fn setup_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                         let button = egui::Button::new(&state)
                             .fill(if active { ACCENT_SOFT } else { SURFACE_RAISED })
                             .stroke(Stroke::new(
-                                1.0,
+                                1.0_f32,
                                 if active { ACCENT } else { SURFACE_RAISED },
                             ))
                             .corner_radius(7.0);
@@ -319,7 +323,7 @@ fn setup_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
 fn preview_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
     Frame::new()
         .fill(SURFACE)
-        .stroke(Stroke::new(1.0, SURFACE_RAISED))
+        .stroke(Stroke::new(1.0_f32, SURFACE_RAISED))
         .corner_radius(12.0)
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
@@ -353,7 +357,7 @@ fn preview_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
             painter.rect_stroke(
                 inset,
                 8.0,
-                Stroke::new(1.0, Color32::from_rgb(40, 45, 57)),
+                Stroke::new(1.0_f32, Color32::from_rgb(40, 45, 57)),
                 egui::StrokeKind::Inside,
             );
             painter.line_segment(
@@ -361,7 +365,7 @@ fn preview_panel(app: &mut PetApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                     egui::pos2(inset.left() + 20.0, inset.bottom() - 30.0),
                     egui::pos2(inset.right() - 20.0, inset.bottom() - 30.0),
                 ],
-                Stroke::new(1.0, ACCENT_SOFT),
+                Stroke::new(1.0_f32, ACCENT_SOFT),
             );
 
             if let Some(texture) = &app.texture {
@@ -458,7 +462,7 @@ fn configure_theme(ctx: &egui::Context) {
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(53, 52, 83);
     visuals.widgets.active.bg_fill = ACCENT_SOFT;
     visuals.selection.bg_fill = ACCENT_SOFT;
-    visuals.selection.stroke = Stroke::new(1.0, ACCENT);
+    visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT);
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
@@ -481,7 +485,7 @@ fn status_badge(ui: &mut egui::Ui, text: &str, ready: bool) {
             26,
         ))
         .stroke(Stroke::new(
-            1.0,
+            1.0_f32,
             Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 86),
         ))
         .corner_radius(999.0)
@@ -511,11 +515,8 @@ mod tests {
     #[test]
     fn keeps_a_dragged_pet_inside_the_preview_bounds() {
         let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0));
-        let offset = clamp_sprite_offset(
-            egui::vec2(250.0, -250.0),
-            bounds,
-            egui::vec2(300.0, 325.0),
-        );
+        let offset =
+            clamp_sprite_offset(egui::vec2(250.0, -250.0), bounds, egui::vec2(300.0, 325.0));
 
         assert_eq!(offset, egui::vec2(50.0, -37.5));
     }

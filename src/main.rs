@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
-mod sixel;
 mod gui;
+mod sixel;
 
 use std::collections::BTreeMap;
 use std::env;
